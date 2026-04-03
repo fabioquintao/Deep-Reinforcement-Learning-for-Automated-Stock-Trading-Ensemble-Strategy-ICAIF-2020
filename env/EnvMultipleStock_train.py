@@ -52,6 +52,8 @@ class StockEnvTrain(gym.Env):
         self.asset_memory = [INITIAL_ACCOUNT_BALANCE]
         self.rewards_memory = []
         self.trades = 0
+        # for rolling Sortino reward shaping
+        self._return_window = 20
         #self.reset()
         self._seed()
 
@@ -160,8 +162,20 @@ class StockEnvTrain(gym.Env):
             
             #print("end_total_asset:{}".format(end_total_asset))
             
-            self.reward = end_total_asset - begin_total_asset            
-            # print("step_reward:{}".format(self.reward))
+            # Normalize reward to percentage return (scale-invariant)
+            step_return = (end_total_asset - begin_total_asset) / begin_total_asset
+
+            # Rolling Sortino-style penalty: divide by downside deviation
+            # to encourage risk-adjusted returns during training
+            if len(self.asset_memory) >= self._return_window:
+                hist = np.array(self.asset_memory[-(self._return_window):])
+                hist_returns = np.diff(hist) / hist[:-1]
+                downside = hist_returns[hist_returns < 0]
+                downside_std = downside.std() if len(downside) > 1 else 1e-8
+                self.reward = step_return / (downside_std + 1e-8)
+            else:
+                self.reward = step_return * 100  # scale early steps before window fills
+
             self.rewards_memory.append(self.reward)
             self.asset_memory.append(end_total_asset)
 
@@ -174,8 +188,9 @@ class StockEnvTrain(gym.Env):
         self.data = self.df.loc[self.day,:]
         self.cost = 0
         self.trades = 0
-        self.terminal = False 
+        self.terminal = False
         self.rewards_memory = []
+        self._return_window = 20
         #initiate state
         self.state = [INITIAL_ACCOUNT_BALANCE] + \
                       self.data.adjcp.values.tolist() + \
