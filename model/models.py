@@ -10,6 +10,7 @@ from stable_baselines import PPO2
 from stable_baselines import A2C
 from stable_baselines import DDPG
 from stable_baselines import TD3
+from stable_baselines.sac.policies import SACPolicy
 from stable_baselines.ddpg.policies import DDPGPolicy
 from stable_baselines.common.policies import MlpPolicy
 from stable_baselines.common.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise, AdaptiveParamNoiseSpec
@@ -21,6 +22,19 @@ from config import config
 from env.EnvMultipleStock_train import StockEnvTrain
 from env.EnvMultipleStock_validation import StockEnvValidation
 from env.EnvMultipleStock_trade import StockEnvTrade
+
+
+def train_SAC(env_train, model_name, timesteps=50000):
+    """SAC model"""
+
+    start = time.time()
+    model = SAC('MlpPolicy', env_train, verbose=0)
+    model.learn(total_timesteps=timesteps)
+    end = time.time()
+
+    model.save(f"{config.TRAINED_MODEL_DIR}/{model_name}")
+    print('Training time (SAC): ', (end - start) / 60, ' minutes')
+    return model
 
 
 def train_A2C(env_train, model_name, timesteps=50000):
@@ -107,7 +121,7 @@ def get_validation_sharpe(iteration):
     df_total_value = pd.read_csv('results/account_value_validation_{}.csv'.format(iteration), index_col=0)
     df_total_value.columns = ['account_value_train']
     df_total_value['daily_return'] = df_total_value.pct_change(1)
-    sharpe = (4 ** 0.5) * df_total_value['daily_return'].mean() / \
+    sharpe = (252 ** 0.5) * df_total_value['daily_return'].mean() / \
              df_total_value['daily_return'].std()
     return sharpe
 
@@ -122,6 +136,7 @@ def run_ensemble_strategy(df, unique_trade_date, rebalance_window, validation_wi
     ppo_sharpe_list = []
     ddpg_sharpe_list = []
     a2c_sharpe_list = []
+    sac_sharpe_list = []
 
     model_use = []
 
@@ -180,42 +195,56 @@ def run_ensemble_strategy(df, unique_trade_date, rebalance_window, validation_wi
         # print("training: ",len(data_split(df, start=20090000, end=test.datadate.unique()[i-rebalance_window]) ))
         # print("==============Model Training===========")
         print("======A2C Training========")
-        model_a2c = train_A2C(env_train, model_name="A2C_10k_dow_{}".format(i), timesteps=10000)
+        model_a2c = train_A2C(env_train, model_name="A2C_30k_dow_{}".format(i), timesteps=30000)
         print("======A2C Validation from: ", unique_trade_date[i - rebalance_window - validation_window], "to ",
               unique_trade_date[i - rebalance_window])
+        obs_val = env_val.reset()
         DRL_validation(model=model_a2c, test_data=validation, test_env=env_val, test_obs=obs_val)
         sharpe_a2c = get_validation_sharpe(i)
         print("A2C Sharpe Ratio: ", sharpe_a2c)
 
         print("======PPO Training========")
-        model_ppo = train_PPO(env_train, model_name="PPO_100k_dow_{}".format(i), timesteps=80000)
+        model_ppo = train_PPO(env_train, model_name="PPO_100k_dow_{}".format(i), timesteps=100000)
         print("======PPO Validation from: ", unique_trade_date[i - rebalance_window - validation_window], "to ",
               unique_trade_date[i - rebalance_window])
+        obs_val = env_val.reset()
         DRL_validation(model=model_ppo, test_data=validation, test_env=env_val, test_obs=obs_val)
         sharpe_ppo = get_validation_sharpe(i)
         print("PPO Sharpe Ratio: ", sharpe_ppo)
 
         print("======DDPG Training========")
-        model_ddpg = train_DDPG(env_train, model_name="DDPG_10k_dow_{}".format(i), timesteps=5000)
+        model_ddpg = train_DDPG(env_train, model_name="DDPG_10k_dow_{}".format(i), timesteps=15000)
         print("======DDPG Validation from: ", unique_trade_date[i - rebalance_window - validation_window], "to ",
               unique_trade_date[i - rebalance_window])
+        obs_val = env_val.reset()
         DRL_validation(model=model_ddpg, test_data=validation, test_env=env_val, test_obs=obs_val)
         sharpe_ddpg = get_validation_sharpe(i)
+
+        print("======SAC Training========")
+        model_sac = train_SAC(env_train, model_name="SAC_30k_dow_{}".format(i), timesteps=30000)
+        print("======SAC Validation from: ", unique_trade_date[i - rebalance_window - validation_window], "to ",
+              unique_trade_date[i - rebalance_window])
+        obs_val = env_val.reset()
+        DRL_validation(model=model_sac, test_data=validation, test_env=env_val, test_obs=obs_val)
+        sharpe_sac = get_validation_sharpe(i)
+        print("SAC Sharpe Ratio: ", sharpe_sac)
 
         ppo_sharpe_list.append(sharpe_ppo)
         a2c_sharpe_list.append(sharpe_a2c)
         ddpg_sharpe_list.append(sharpe_ddpg)
+        sac_sharpe_list.append(sharpe_sac)
 
         # Model Selection based on sharpe ratio
-        if (sharpe_ppo >= sharpe_a2c) & (sharpe_ppo >= sharpe_ddpg):
-            model_ensemble = model_ppo
-            model_use.append('PPO')
-        elif (sharpe_a2c > sharpe_ppo) & (sharpe_a2c > sharpe_ddpg):
-            model_ensemble = model_a2c
-            model_use.append('A2C')
-        else:
-            model_ensemble = model_ddpg
-            model_use.append('DDPG')
+        sharpe_candidates = {
+            'PPO': (sharpe_ppo, model_ppo),
+            'A2C': (sharpe_a2c, model_a2c),
+            'DDPG': (sharpe_ddpg, model_ddpg),
+            'SAC': (sharpe_sac, model_sac),
+        }
+        best_model_name = max(sharpe_candidates, key=lambda k: sharpe_candidates[k][0])
+        model_ensemble = sharpe_candidates[best_model_name][1]
+        model_use.append(best_model_name)
+        print("Selected Model: ", best_model_name, " with Sharpe: ", sharpe_candidates[best_model_name][0])
         ############## Training and Validation ends ##############    
 
         ############## Trading starts ##############    
