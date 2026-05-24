@@ -1,0 +1,13 @@
+INITIAL_BALANCE = 10_000.0
+TRANSACTION_FEE = 0.001          # 0.1% per trade (Binance taker fee)
+HMAX = 10.0                       # max BTC units per action
+TRAINED_MODEL_DIR = "trained_models/bitcoin"
+RESULTS_DIR = "results/bitcoin"
+TICKER = "BTC-USD"
+START_DATE = "2018-01-01"
+END_DATE = "2024-01-01"
+TRAIN_END_DATE = "2022-01-01"    # ~80% train
+VAL_END_DATE = "2023-01-01"     # ~10% val
+# TEST_END = END_DATE            # remaining ~10%
+REBALANCE_WINDOW = 90            # days between model re-selections
+VALIDATION_WINDOW = 90
